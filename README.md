@@ -1,6 +1,6 @@
 # Tectika Multi-Agent Research System
 
-A Python backend service that uses a 5-agent pipeline to research any topic and produce a structured professional report.
+A Python backend service that uses a 5-agent pipeline — built on **LangChain primitives** + **Azure OpenAI (GPT-4o)** — to research any topic and produce a structured professional report.
 
 ## Architecture
 
@@ -15,9 +15,9 @@ POST /run (topic)
  PlannerAgent  →  [sub_question_1, sub_question_2, ..., sub_question_N]
       │
       │ 2. research (concurrent via asyncio.gather)
-      ├──► ResearcherAgent(sub_question_1)  [tool-calling agentic loop]
-      ├──► ResearcherAgent(sub_question_2)  [tool-calling agentic loop]
-      └──► ResearcherAgent(sub_question_N)  [tool-calling agentic loop]
+      ├──► ResearcherAgent(sub_question_1)  [bind_tools loop with web_search]
+      ├──► ResearcherAgent(sub_question_2)  [bind_tools loop with web_search]
+      └──► ResearcherAgent(sub_question_N)  [bind_tools loop with web_search]
       │
       │ 3. aggregate
       ▼
@@ -28,30 +28,31 @@ POST /run (topic)
   WriterAgent  →  final polished report
 ```
 
-| Agent | Role | LLM Mode |
+| Agent | Role | LangChain feature |
 |---|---|---|
-| Manager | Orchestrates the pipeline; assembles `agent_trace` and `RunResponse` | No direct LLM call |
-| Planner | Decomposes research topic into 3–6 focused sub-questions | JSON structured output |
-| Researcher | Gathers facts per sub-question; runs concurrently | Tool-calling agentic loop (web search) |
-| Aggregator | Merges and deduplicates all researcher outputs | Single completion |
-| Writer | Formats consolidated findings into a professional report | Single completion |
+| Manager | Orchestrates the pipeline; assembles `agent_trace` and `RunResponse` | None (pure orchestration with `asyncio.gather`) |
+| Planner | Decomposes research topic into 3–6 focused sub-questions | `AzureChatOpenAI.with_structured_output(PlannerOutput)` |
+| Researcher | Gathers facts per sub-question; runs concurrently | `AzureChatOpenAI.bind_tools([web_search])` + manual message loop |
+| Aggregator | Merges and deduplicates all researcher outputs | `AzureChatOpenAI.ainvoke([SystemMessage, HumanMessage])` |
+| Writer | Formats consolidated findings into a professional report | Same as Aggregator |
 
 ## Prerequisites
 
-- Python 3.10+
-- Azure OpenAI deployment (GPT-4o via Azure AI Foundry)
-- (Optional) [Tavily API key](https://tavily.com/) for real web search — without it the Researcher falls back to GPT-4o's training knowledge
+- **Python 3.10+** (only required for running locally without Docker)
+- **Docker + Docker Compose** (only required for the Docker path)
+- **Azure OpenAI deployment** (GPT-4o via Azure AI Foundry) — credentials provided separately
+- **(Optional) [Tavily API key](https://tavily.com/)** for real web search — without it the Researcher gracefully falls back to GPT-4o's training knowledge
 
-## Setup
+## Setup — without Docker
 
 ```bash
 # 1. Clone and enter the project
-git clone <repo-url>
+git clone https://github.com/NechemiaR/tectika-task.git
 cd tectika-task
 
-# 2. Create virtual environment
+# 2. Create a virtual environment
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -64,19 +65,26 @@ cp .env.example .env
 uvicorn main:app --reload
 ```
 
-The API will be available at `http://localhost:8000`. Interactive docs: `http://localhost:8000/docs`.
+The API will be available at **http://localhost:8000**. Interactive Swagger docs: **http://localhost:8000/docs**.
 
-## Docker
+## Setup — with Docker
 
 ```bash
-# Build and start
+# 1. Configure environment variables
+cp .env.example .env
+# Edit .env with your Azure credentials
+
+# 2. Build and start the container
 docker-compose up --build
 
-# Run in background
+# Or run detached
 docker-compose up --build -d
+
+# Stop
+docker-compose down
 ```
 
-Logs are JSON-structured and stream to stdout.
+The API is exposed on **http://localhost:8000** exactly as in the local setup. JSON-structured logs stream to the container's stdout (`docker-compose logs -f`).
 
 ## Environment Variables
 
@@ -86,13 +94,11 @@ Logs are JSON-structured and stream to stdout.
 | `AZURE_OPENAI_ENDPOINT` | Yes | Azure endpoint URL (e.g. `https://your-resource.openai.azure.com/`) |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | Yes | GPT-4o deployment name in Azure AI Foundry |
 | `AZURE_OPENAI_API_VERSION` | Yes | API version (default: `2024-02-01`) |
-| `TAVILY_API_KEY` | No | Enables real web search in ResearcherAgent |
+| `TAVILY_API_KEY` | No | Enables real web search in `ResearcherAgent`. When absent, the Researcher answers from GPT-4o's training knowledge instead. |
 
 ## API Usage
 
 ### `POST /run`
-
-**Request:**
 
 ```bash
 curl -X POST http://localhost:8000/run \
@@ -100,7 +106,7 @@ curl -X POST http://localhost:8000/run \
   -d '{"topic": "The impact of LLMs on backend engineering workflows"}'
 ```
 
-**Response:**
+**Response shape:**
 
 ```json
 {
@@ -132,9 +138,7 @@ curl -X POST http://localhost:8000/run \
     }
   ],
   "duration_ms": 18420.5,
-  "meta": {
-    "duration_ms": 18420.5
-  }
+  "meta": { "duration_ms": 18420.5 }
 }
 ```
 
@@ -142,10 +146,36 @@ The `agent_trace` contains one entry per agent action. Researcher entries run co
 
 ## Design Decisions
 
-**No LangChain** — Direct Azure OpenAI SDK (`openai` package, `AsyncAzureOpenAI`) keeps the code readable and makes the orchestration logic explicit. LangChain's abstractions would obscure the agentic loop in the Researcher.
+**LangChain primitives, not the agent framework** — All agents use LangChain's typed message and model classes (`AzureChatOpenAI`, `SystemMessage`, `HumanMessage`, `ToolMessage`, `@tool`, `bind_tools`, `with_structured_output`). The `AgentExecutor` / LangGraph stack is intentionally *not* used — the orchestration loop in `ManagerAgent` and the tool-calling loop in `ResearcherAgent` are written explicitly. This keeps the code transparent: every step the system takes is visible in the source.
 
 **Tavily for web search** — Purpose-built for LLM use: returns pre-chunked, relevant excerpts rather than raw HTML. One REST call, no Azure-specific setup required.
 
-**`asyncio.gather` for concurrent research** — All Researcher coroutines are scheduled simultaneously. `ResearcherAgent.run()` is fully stateless (no instance state), making concurrent calls on one instance safe.
+**`asyncio.gather` for concurrent research** — All Researcher coroutines are scheduled simultaneously. `ResearcherAgent.run()` keeps state in local variables only, making concurrent calls on a single instance safe.
 
 **`pydantic-settings` for config** — Missing required environment variables raise a clear `ValidationError` at startup with field names listed, rather than surfacing as a `None`-dereference deep in an LLM call.
+
+**Structured logging** — JSON-formatted log lines via `python-json-logger`. Each agent has its own logger (`tectika.planner`, `tectika.researcher`, etc.) so log lines are easy to grep by agent.
+
+## Project Structure
+
+```
+tectika/
+├── agents/
+│   ├── manager.py       # Orchestrator — asyncio.gather + trace assembly
+│   ├── planner.py       # Topic decomposition (with_structured_output)
+│   ├── researcher.py    # Concurrent research (bind_tools + tool loop)
+│   ├── aggregator.py    # Deduplication and merging
+│   └── writer.py        # Final report generation
+├── tools/
+│   └── web_search.py    # Tavily HTTP client
+├── models/
+│   └── schemas.py       # Pydantic v2 models for API I/O
+├── core/
+│   ├── config.py        # pydantic-settings BaseSettings
+│   └── logging_config.py # JSON structured logging
+└── api/
+    └── routes.py        # POST /run
+main.py                  # FastAPI entry point
+docs/
+└── agent-architecture.md # Original design document
+```
