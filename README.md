@@ -84,7 +84,9 @@ docker-compose up --build -d
 docker-compose down
 ```
 
-The API is exposed on **http://localhost:8000** exactly as in the local setup. JSON-structured logs stream to the container's stdout (`docker-compose logs -f`).
+The API is exposed on **http://localhost:8001** when running with Docker. JSON-structured logs stream to the container's stdout (`docker-compose logs -f`).
+
+Note: the app does not define a `/` route, so opening `http://localhost:8001/` will return `404 Not Found`. Use `http://localhost:8001/docs` for the Swagger UI, or call `POST /run` directly.
 
 ## Environment Variables
 
@@ -105,6 +107,8 @@ curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"topic": "The impact of LLMs on backend engineering workflows"}'
 ```
+
+If you are using Docker, send the request to `http://localhost:8001/run` instead.
 
 **Response shape:**
 
