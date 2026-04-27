@@ -1,7 +1,8 @@
 import logging
 import time
 
-from openai import AsyncAzureOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import AzureChatOpenAI
 
 from tectika.core.config import settings
 from tectika.models.schemas import TraceEntry
@@ -20,8 +21,14 @@ _SYSTEM_PROMPT = (
 
 
 class AggregatorAgent:
-    def __init__(self, client: AsyncAzureOpenAI) -> None:
-        self._client = client
+    def __init__(self) -> None:
+        self._llm = AzureChatOpenAI(
+            azure_deployment=settings.azure_openai_deployment_name,
+            azure_endpoint=settings.azure_openai_endpoint,
+            api_version=settings.azure_openai_api_version,
+            api_key=settings.azure_openai_api_key,
+            temperature=0.2,
+        )
 
     async def run(self, research_results: list[str]) -> tuple[str, TraceEntry]:
         start = time.monotonic()
@@ -31,16 +38,12 @@ class AggregatorAgent:
             f"[Research Batch {i + 1}]\n{text}" for i, text in enumerate(research_results)
         )
 
-        response = await self._client.chat.completions.create(
-            model=settings.azure_openai_deployment_name,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": numbered},
-            ],
-            temperature=0.2,
-        )
+        response = await self._llm.ainvoke([
+            SystemMessage(_SYSTEM_PROMPT),
+            HumanMessage(numbered),
+        ])
+        consolidated: str = response.content or ""  # type: ignore[assignment]
 
-        consolidated = response.choices[0].message.content or ""
         duration_ms = round((time.monotonic() - start) * 1000, 1)
         logger.info("aggregator_complete", extra={"duration_ms": duration_ms})
 
