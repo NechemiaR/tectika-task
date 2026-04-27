@@ -2,8 +2,6 @@ import asyncio
 import logging
 import time
 
-from openai import AsyncAzureOpenAI
-
 from tectika.agents.aggregator import AggregatorAgent
 from tectika.agents.planner import PlannerAgent
 from tectika.agents.researcher import ResearcherAgent
@@ -14,12 +12,11 @@ logger = logging.getLogger("tectika.manager")
 
 
 class ManagerAgent:
-    def __init__(self, client: AsyncAzureOpenAI) -> None:
-        self._client = client
-        self._planner = PlannerAgent(client=client)
+    def __init__(self) -> None:
+        self._planner = PlannerAgent()
         self._researcher = ResearcherAgent()
-        self._aggregator = AggregatorAgent(client=client)
-        self._writer = WriterAgent(client=client)
+        self._aggregator = AggregatorAgent()
+        self._writer = WriterAgent()
 
     async def run(self, topic: str) -> RunResponse:
         pipeline_start = time.monotonic()
@@ -27,14 +24,9 @@ class ManagerAgent:
 
         # Step 1 — Decompose topic into sub-questions
         sub_questions, planner_trace = await self._planner.run(topic)
-        logger.info(
-            "manager_planning_done",
-            extra={"sub_question_count": len(sub_questions)},
-        )
+        logger.info("manager_planning_done", extra={"sub_question_count": len(sub_questions)})
 
         # Step 2 — Research all sub-questions concurrently
-        # ResearcherAgent.run() is stateless (all state in local variables),
-        # so calling it concurrently on one instance is safe.
         research_tasks = [self._researcher.run(q) for q in sub_questions]
         research_outputs: list[tuple[str, TraceEntry]] = await asyncio.gather(*research_tasks)
 
@@ -44,10 +36,7 @@ class ManagerAgent:
             findings_texts.append(findings)
             researcher_traces.append(r_trace)
 
-        logger.info(
-            "manager_research_done",
-            extra={"researcher_count": len(researcher_traces)},
-        )
+        logger.info("manager_research_done", extra={"researcher_count": len(researcher_traces)})
 
         # Step 3 — Aggregate all findings into one deduplicated document
         consolidated, aggregator_trace = await self._aggregator.run(findings_texts)
