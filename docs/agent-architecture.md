@@ -36,7 +36,7 @@
 
 * **Action:** Executes an Agentic Loop utilizing the Function Calling capabilities of the language model:
 
-  1. The language model receives the sub-question along with a Tool definition that allows web searching (e.g., Bing Search API).
+  1. The language model receives the sub-question along with a Tool definition that allows web searching (DuckDuckGo via the `ddgs` library — no API key required).
 
   2. The model decides autonomously when and how to call the tool, generating the optimal search query.
 
