@@ -7,7 +7,7 @@ from langchain_openai import AzureChatOpenAI
 
 from tectika.core.config import settings
 from tectika.models.schemas import TraceEntry
-from tectika.tools.web_search import tavily_search
+from tectika.tools.web_search import duckduckgo_search
 
 logger = logging.getLogger("tectika.researcher")
 
@@ -25,16 +25,11 @@ _MAX_ITERATIONS = 5
 async def web_search(query: str) -> str:
     """Search the web for current, factual information on a topic."""
     try:
-        results = await tavily_search(query)
+        results = await duckduckgo_search(query)
         if not results:
             return f"No results found for: {query}"
         return "\n".join(
             f"- {r.get('title', '')}: {r.get('content', '')[:400]}" for r in results
-        )
-    except RuntimeError:
-        return (
-            f"[Web search unavailable — no TAVILY_API_KEY set. "
-            f"Provide your best answer from training knowledge for: {query}]"
         )
     except Exception as exc:
         return f"[Search failed: {exc}. Continue with available knowledge.]"

@@ -41,7 +41,7 @@ POST /run (topic)
 - **Python 3.10+** (only required for running locally without Docker)
 - **Docker + Docker Compose** (only required for the Docker path)
 - **Azure OpenAI deployment** (GPT-4o via Azure AI Foundry) — credentials provided separately
-- **(Optional) [Tavily API key](https://tavily.com/)** for real web search — without it the Researcher gracefully falls back to GPT-4o's training knowledge
+- **DuckDuckGo search** for real web search — no extra API key is required, and the Researcher falls back to GPT-4o's training knowledge if search is unavailable
 
 ## Setup — without Docker
 
@@ -96,7 +96,6 @@ Note: the app does not define a `/` route, so opening `http://localhost:8001/` w
 | `AZURE_OPENAI_ENDPOINT` | Yes | Azure endpoint URL (e.g. `https://your-resource.openai.azure.com/`) |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | Yes | GPT-4o deployment name in Azure AI Foundry |
 | `AZURE_OPENAI_API_VERSION` | Yes | API version (default: `2024-02-01`) |
-| `TAVILY_API_KEY` | No | Enables real web search in `ResearcherAgent`. When absent, the Researcher answers from GPT-4o's training knowledge instead. |
 
 ## API Usage
 
@@ -152,7 +151,7 @@ The `agent_trace` contains one entry per agent action. Researcher entries run co
 
 **LangChain primitives, not the agent framework** — All agents use LangChain's typed message and model classes (`AzureChatOpenAI`, `SystemMessage`, `HumanMessage`, `ToolMessage`, `@tool`, `bind_tools`, `with_structured_output`). The `AgentExecutor` / LangGraph stack is intentionally *not* used — the orchestration loop in `ManagerAgent` and the tool-calling loop in `ResearcherAgent` are written explicitly. This keeps the code transparent: every step the system takes is visible in the source.
 
-**Tavily for web search** — Purpose-built for LLM use: returns pre-chunked, relevant excerpts rather than raw HTML. One REST call, no Azure-specific setup required.
+**DuckDuckGo for web search** — No extra API key is required and the tool returns compact result snippets that fit the agent's tool loop. The code wraps the blocking search call in `asyncio.to_thread()` so the async pipeline stays responsive.
 
 **`asyncio.gather` for concurrent research** — All Researcher coroutines are scheduled simultaneously. `ResearcherAgent.run()` keeps state in local variables only, making concurrent calls on a single instance safe.
 
@@ -171,7 +170,7 @@ tectika/
 │   ├── aggregator.py    # Deduplication and merging
 │   └── writer.py        # Final report generation
 ├── tools/
-│   └── web_search.py    # Tavily HTTP client
+│   └── web_search.py    # DuckDuckGo search wrapper
 ├── models/
 │   └── schemas.py       # Pydantic v2 models for API I/O
 ├── core/

@@ -9,9 +9,5 @@ class Settings(BaseSettings):
     azure_openai_deployment_name: str
     azure_openai_api_version: str = "2024-02-01"
 
-    # Optional: enables real web search in ResearcherAgent.
-    # Falls back to LLM-only reasoning when absent.
-    tavily_api_key: str | None = None
-
 
 settings = Settings()
