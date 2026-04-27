@@ -5,13 +5,14 @@ A Python backend service that uses a 5-agent pipeline — built on **LangChain p
 ## Architecture
 
 ```
-POST /run (topic)
+POST /run         (topic)  ─►  RunResponse  (report + agent_trace + meta{duration_ms,tokens})
+POST /run/stream  (topic)  ─►  SSE stream of trace events, then a final 'complete' event
       │
       ▼
- ManagerAgent  ──────────────────────────────────────────────────────►  RunResponse
-      │                                                                   (report +
-      │ 1. decompose                                                       agent_trace +
-      ▼                                                                    duration_ms)
+ ManagerAgent.stream()  ──►  yields events as each agent finishes
+      │
+      │ 1. decompose
+      ▼
  PlannerAgent  →  [sub_question_1, sub_question_2, ..., sub_question_N]
       │
       │ 2. research (concurrent via asyncio.gather)
@@ -119,33 +120,66 @@ If you are using Docker, send the request to `http://localhost:8001/run` instead
       "agent": "Manager",
       "action": "orchestrate_pipeline",
       "input_summary": "The impact of LLMs on backend engineering workflows",
-      "output_summary": "Pipeline complete: 5 sub-questions researched, results aggregated and written into final report",
-      "output": "Pipeline complete: 5 sub-questions researched, results aggregated and written into final report",
-      "duration_ms": 18420.5
+      "output_summary": "Pipeline complete: 5 sub-questions researched, ...",
+      "output": "Pipeline complete: 5 sub-questions researched, ...",
+      "duration_ms": 18420.5,
+      "tokens": { "input_tokens": 0, "output_tokens": 0, "total_tokens": 0 }
     },
     {
       "agent": "Planner",
       "action": "decompose_topic",
       "input_summary": "The impact of LLMs on backend engineering workflows",
       "output_summary": "Generated 5 sub-questions from topic",
-      "output": "Generated 5 sub-questions from topic",
-      "duration_ms": 1230.1
+      "output": "1. What AI-based coding tools are most commonly used...\n2. ...",
+      "duration_ms": 1230.1,
+      "tokens": { "input_tokens": 142, "output_tokens": 88, "total_tokens": 230 }
     },
     {
       "agent": "Researcher",
       "action": "research_sub_question",
       "input_summary": "What AI-based coding tools are most commonly used by backend engineers?",
       "output_summary": "- GitHub Copilot adoption: 55% of developers...",
-      "output": "- GitHub Copilot adoption: 55% of developers...",
-      "duration_ms": 4210.8
+      "output": "<full multi-paragraph factual findings>",
+      "duration_ms": 4210.8,
+      "tokens": { "input_tokens": 1820, "output_tokens": 412, "total_tokens": 2232 }
     }
   ],
-  "duration_ms": 18420.5,
-  "meta": { "duration_ms": 18420.5 }
+  "meta": {
+    "duration_ms": 18420.5,
+    "tokens": { "input_tokens": 12480, "output_tokens": 3120, "total_tokens": 15600 }
+  }
 }
 ```
 
-The `agent_trace` contains one entry per agent action. Researcher entries run concurrently — their individual `duration_ms` values will be similar to each other but far less than the total `duration_ms`, which proves the parallel execution.
+The `agent_trace` contains one entry per agent action. Each entry carries:
+
+- `output_summary` — short human-readable description of what the agent produced.
+- `output` — the **full** content the agent produced (Researcher findings, consolidated document, final report, …) so consumers can audit every step.
+- `tokens` — per-agent input/output/total token counts captured from the Azure OpenAI response. Researcher entries sum tokens across all tool-loop iterations.
+
+Total token usage and total wall-clock duration are surfaced under `meta`.
+
+Researcher entries run concurrently — their individual `duration_ms` values will be similar to each other but far less than `meta.duration_ms`, which proves the parallel execution.
+
+### `POST /run/stream` (Server-Sent Events)
+
+Same input as `/run`, but the server streams agent traces as each agent completes. Useful for long pipelines where you want progressive feedback instead of waiting 15–30 s for a single JSON blob.
+
+```bash
+curl -N -X POST http://localhost:8000/run/stream \
+  -H "Content-Type: application/json" \
+  -d '{"topic": "The impact of LLMs on backend engineering workflows"}'
+```
+
+Each line on the wire is `data: <json>\n\n`. Event types:
+
+| `type` | When emitted | `data` payload |
+|---|---|---|
+| `trace` | After each agent finishes (Researchers in **completion order**) | A single `TraceEntry` |
+| `complete` | After the Writer finishes | The full `RunResponse` |
+| `error` | If the pipeline raises | `{"message": "Internal pipeline error"}` |
+
+This makes the parallelism observable: you'll see all Researcher `trace` events arrive close together, well before the Aggregator and Writer events.
 
 ## Design Decisions
 
@@ -157,7 +191,9 @@ The `agent_trace` contains one entry per agent action. Researcher entries run co
 
 **`pydantic-settings` for config** — Missing required environment variables raise a clear `ValidationError` at startup with field names listed, rather than surfacing as a `None`-dereference deep in an LLM call.
 
-**Structured logging** — JSON-formatted log lines via `python-json-logger`. Each agent has its own logger (`tectika.planner`, `tectika.researcher`, etc.) so log lines are easy to grep by agent.
+**Structured logging** — JSON-formatted log lines via `python-json-logger`. Each agent has its own logger (`tectika.planner`, `tectika.researcher`, etc.) so log lines are easy to grep by agent. Token counts are logged alongside `duration_ms` for every agent call.
+
+**Single pipeline, two transports** — `ManagerAgent.stream()` is an async generator that yields events as agents finish. `POST /run` consumes the generator and returns the final `complete` event as a single JSON response; `POST /run/stream` forwards every event over SSE. There is no duplicated orchestration logic between the two endpoints.
 
 ## Project Structure
 
