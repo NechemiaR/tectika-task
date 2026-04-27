@@ -2,25 +2,6 @@ import httpx
 
 from tectika.core.config import settings
 
-# OpenAI function-calling tool definition consumed by ResearcherAgent
-WEB_SEARCH_TOOL_DEFINITION: dict = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "Search the web for current, factual information on a topic.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query to look up",
-                }
-            },
-            "required": ["query"],
-        },
-    },
-}
-
 
 async def tavily_search(query: str, max_results: int = 5) -> list[dict]:
     """Call Tavily Search API and return a list of {title, url, content} dicts."""

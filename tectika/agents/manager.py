@@ -17,7 +17,7 @@ class ManagerAgent:
     def __init__(self, client: AsyncAzureOpenAI) -> None:
         self._client = client
         self._planner = PlannerAgent(client=client)
-        self._researcher = ResearcherAgent(client=client)
+        self._researcher = ResearcherAgent()
         self._aggregator = AggregatorAgent(client=client)
         self._writer = WriterAgent(client=client)
 
