@@ -2,9 +2,8 @@ import logging
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import AzureChatOpenAI
 
-from tectika.core.config import settings
+from tectika.core.llm import coerce_text, extract_tokens, make_chat_model
 from tectika.models.schemas import TraceEntry
 
 logger = logging.getLogger("tectika.writer")
@@ -23,13 +22,7 @@ _SYSTEM_PROMPT = (
 
 class WriterAgent:
     def __init__(self) -> None:
-        self._llm = AzureChatOpenAI(
-            azure_deployment=settings.azure_openai_deployment_name,
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_version=settings.azure_openai_api_version,
-            api_key=settings.azure_openai_api_key,
-            temperature=0.5,
-        )
+        self._llm = make_chat_model(temperature=0.5)
 
     async def run(self, consolidated_findings: str) -> tuple[str, TraceEntry]:
         start = time.monotonic()
@@ -39,18 +32,26 @@ class WriterAgent:
             SystemMessage(_SYSTEM_PROMPT),
             HumanMessage(consolidated_findings),
         ])
-        report: str = response.content or ""  # type: ignore[assignment]
+        report = coerce_text(response.content)
+        tokens = extract_tokens(response)
 
         duration_ms = round((time.monotonic() - start) * 1000, 1)
-        logger.info("writer_complete", extra={"duration_ms": duration_ms})
+        logger.info(
+            "writer_complete",
+            extra={
+                "duration_ms": duration_ms,
+                "input_tokens": tokens.input_tokens,
+                "output_tokens": tokens.output_tokens,
+            },
+        )
 
-        summary = "Produced structured professional report from consolidated research"
         trace = TraceEntry(
             agent="Writer",
             action="generate_report",
             input_summary="Consolidated research document",
-            output_summary=summary,
-            output=summary,
+            output_summary="Produced structured professional report from consolidated research",
+            output=report,
             duration_ms=duration_ms,
+            tokens=tokens,
         )
         return report, trace

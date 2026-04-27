@@ -2,9 +2,8 @@ import logging
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import AzureChatOpenAI
 
-from tectika.core.config import settings
+from tectika.core.llm import coerce_text, extract_tokens, make_chat_model
 from tectika.models.schemas import TraceEntry
 
 logger = logging.getLogger("tectika.aggregator")
@@ -22,13 +21,7 @@ _SYSTEM_PROMPT = (
 
 class AggregatorAgent:
     def __init__(self) -> None:
-        self._llm = AzureChatOpenAI(
-            azure_deployment=settings.azure_openai_deployment_name,
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_version=settings.azure_openai_api_version,
-            api_key=settings.azure_openai_api_key,
-            temperature=0.2,
-        )
+        self._llm = make_chat_model(temperature=0.2)
 
     async def run(self, research_results: list[str]) -> tuple[str, TraceEntry]:
         start = time.monotonic()
@@ -42,18 +35,26 @@ class AggregatorAgent:
             SystemMessage(_SYSTEM_PROMPT),
             HumanMessage(numbered),
         ])
-        consolidated: str = response.content or ""  # type: ignore[assignment]
+        consolidated = coerce_text(response.content)
+        tokens = extract_tokens(response)
 
         duration_ms = round((time.monotonic() - start) * 1000, 1)
-        logger.info("aggregator_complete", extra={"duration_ms": duration_ms})
+        logger.info(
+            "aggregator_complete",
+            extra={
+                "duration_ms": duration_ms,
+                "input_tokens": tokens.input_tokens,
+                "output_tokens": tokens.output_tokens,
+            },
+        )
 
-        summary = f"Consolidated {len(research_results)} research batches into unified document"
         trace = TraceEntry(
             agent="Aggregator",
             action="merge_and_deduplicate",
             input_summary=f"{len(research_results)} researcher outputs",
-            output_summary=summary,
-            output=summary,
+            output_summary=f"Consolidated {len(research_results)} research batches into unified document",
+            output=consolidated,
             duration_ms=duration_ms,
+            tokens=tokens,
         )
         return consolidated, trace

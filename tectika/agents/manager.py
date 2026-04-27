@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import time
+from typing import AsyncIterator
 
 from tectika.agents.aggregator import AggregatorAgent
 from tectika.agents.planner import PlannerAgent
 from tectika.agents.researcher import ResearcherAgent
 from tectika.agents.writer import WriterAgent
-from tectika.models.schemas import MetaInfo, RunResponse, TraceEntry
+from tectika.models.schemas import MetaInfo, RunResponse, TokenUsage, TraceEntry
 
 logger = logging.getLogger("tectika.manager")
 
@@ -18,56 +19,95 @@ class ManagerAgent:
         self._aggregator = AggregatorAgent()
         self._writer = WriterAgent()
 
-    async def run(self, topic: str) -> RunResponse:
+    async def stream(self, topic: str) -> AsyncIterator[dict]:
+        """Run the pipeline and yield events as agents complete.
+
+        Event shapes:
+          {"type": "trace",    "data": <TraceEntry dict>}
+          {"type": "complete", "data": <RunResponse dict>}
+          {"type": "error",    "data": {"message": str}}
+        """
         pipeline_start = time.monotonic()
         logger.info("manager_start", extra={"topic": topic})
 
-        # Step 1 — Decompose topic into sub-questions
-        sub_questions, planner_trace = await self._planner.run(topic)
-        logger.info("manager_planning_done", extra={"sub_question_count": len(sub_questions)})
+        try:
+            # Step 1 — Decompose
+            sub_questions, planner_trace = await self._planner.run(topic)
+            yield {"type": "trace", "data": planner_trace.model_dump()}
+            logger.info("manager_planning_done", extra={"sub_question_count": len(sub_questions)})
 
-        # Step 2 — Research all sub-questions concurrently
-        research_tasks = [self._researcher.run(q) for q in sub_questions]
-        research_outputs: list[tuple[str, TraceEntry]] = await asyncio.gather(*research_tasks)
+            # Step 2 — Research concurrently, emit each as it finishes
+            research_tasks = [
+                asyncio.create_task(self._researcher.run(q)) for q in sub_questions
+            ]
+            researcher_traces: list[TraceEntry] = []
+            findings_texts: list[str] = []
+            for coro in asyncio.as_completed(research_tasks):
+                findings, r_trace = await coro
+                findings_texts.append(findings)
+                researcher_traces.append(r_trace)
+                yield {"type": "trace", "data": r_trace.model_dump()}
+            logger.info("manager_research_done", extra={"researcher_count": len(researcher_traces)})
 
-        findings_texts: list[str] = []
-        researcher_traces: list[TraceEntry] = []
-        for findings, r_trace in research_outputs:
-            findings_texts.append(findings)
-            researcher_traces.append(r_trace)
+            # Step 3 — Aggregate
+            consolidated, aggregator_trace = await self._aggregator.run(findings_texts)
+            yield {"type": "trace", "data": aggregator_trace.model_dump()}
 
-        logger.info("manager_research_done", extra={"researcher_count": len(researcher_traces)})
+            # Step 4 — Write
+            report, writer_trace = await self._writer.run(consolidated)
+            yield {"type": "trace", "data": writer_trace.model_dump()}
 
-        # Step 3 — Aggregate all findings into one deduplicated document
-        consolidated, aggregator_trace = await self._aggregator.run(findings_texts)
+            total_ms = round((time.monotonic() - pipeline_start) * 1000, 1)
+            total_tokens = (
+                planner_trace.tokens
+                + sum((t.tokens for t in researcher_traces), TokenUsage())
+                + aggregator_trace.tokens
+                + writer_trace.tokens
+            )
 
-        # Step 4 — Write the final report
-        report, writer_trace = await self._writer.run(consolidated)
-
-        total_ms = round((time.monotonic() - pipeline_start) * 1000, 1)
-        logger.info("manager_complete", extra={"duration_ms": total_ms})
-
-        manager_trace = TraceEntry(
-            agent="Manager",
-            action="orchestrate_pipeline",
-            input_summary=topic[:300],
-            output_summary=(
+            manager_summary = (
                 f"Pipeline complete: {len(sub_questions)} sub-questions researched, "
-                f"results aggregated and written into final report"
-            ),
-            output=(
-                f"Pipeline complete: {len(sub_questions)} sub-questions researched, "
-                f"results aggregated and written into final report"
-            ),
-            duration_ms=total_ms,
-        )
+                "results aggregated and written into final report"
+            )
+            manager_trace = TraceEntry(
+                agent="Manager",
+                action="orchestrate_pipeline",
+                input_summary=topic[:300],
+                output_summary=manager_summary,
+                output=manager_summary,
+                duration_ms=total_ms,
+                tokens=TokenUsage(),
+            )
+            yield {"type": "trace", "data": manager_trace.model_dump()}
 
-        # Manager trace first (matches PDF example order), then execution order
-        full_trace = [manager_trace, planner_trace, *researcher_traces, aggregator_trace, writer_trace]
+            response = RunResponse(
+                report=report,
+                agent_trace=[
+                    manager_trace,
+                    planner_trace,
+                    *researcher_traces,
+                    aggregator_trace,
+                    writer_trace,
+                ],
+                meta=MetaInfo(duration_ms=total_ms, tokens=total_tokens),
+            )
+            logger.info(
+                "manager_complete",
+                extra={
+                    "duration_ms": total_ms,
+                    "input_tokens": total_tokens.input_tokens,
+                    "output_tokens": total_tokens.output_tokens,
+                },
+            )
+            yield {"type": "complete", "data": response.model_dump()}
 
-        return RunResponse(
-            report=report,
-            agent_trace=full_trace,
-            duration_ms=total_ms,
-            meta=MetaInfo(duration_ms=total_ms),
-        )
+        except Exception as exc:
+            logger.error("manager_error", extra={"error": str(exc)}, exc_info=True)
+            yield {"type": "error", "data": {"message": "Internal pipeline error"}}
+            raise
+
+    async def run(self, topic: str) -> RunResponse:
+        async for event in self.stream(topic):
+            if event["type"] == "complete":
+                return RunResponse(**event["data"])
+        raise RuntimeError("pipeline did not produce a final response")

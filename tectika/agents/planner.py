@@ -2,9 +2,8 @@ import logging
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import AzureChatOpenAI
 
-from tectika.core.config import settings
+from tectika.core.llm import extract_tokens, make_chat_model
 from tectika.models.schemas import PlannerOutput, TraceEntry
 
 logger = logging.getLogger("tectika.planner")
@@ -19,38 +18,41 @@ _SYSTEM_PROMPT = (
 
 class PlannerAgent:
     def __init__(self) -> None:
-        llm = AzureChatOpenAI(
-            azure_deployment=settings.azure_openai_deployment_name,
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_version=settings.azure_openai_api_version,
-            api_key=settings.azure_openai_api_key,
-            temperature=0.3,
+        self._llm = make_chat_model(temperature=0.3).with_structured_output(
+            PlannerOutput, include_raw=True
         )
-        self._llm = llm.with_structured_output(PlannerOutput)
 
     async def run(self, topic: str) -> tuple[list[str], TraceEntry]:
         start = time.monotonic()
         logger.info("planner_start", extra={"topic": topic})
 
-        result: PlannerOutput = await self._llm.ainvoke([  # type: ignore[assignment]
+        result = await self._llm.ainvoke([
             SystemMessage(_SYSTEM_PROMPT),
             HumanMessage(topic),
         ])
-        sub_questions = result.sub_questions
+        parsed: PlannerOutput = result["parsed"]
+        tokens = extract_tokens(result["raw"])
+        sub_questions = parsed.sub_questions
 
         duration_ms = round((time.monotonic() - start) * 1000, 1)
         logger.info(
             "planner_complete",
-            extra={"sub_question_count": len(sub_questions), "duration_ms": duration_ms},
+            extra={
+                "sub_question_count": len(sub_questions),
+                "duration_ms": duration_ms,
+                "input_tokens": tokens.input_tokens,
+                "output_tokens": tokens.output_tokens,
+            },
         )
 
-        summary = f"Generated {len(sub_questions)} sub-questions from topic"
+        full_output = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(sub_questions))
         trace = TraceEntry(
             agent="Planner",
             action="decompose_topic",
             input_summary=topic[:300],
-            output_summary=summary,
-            output=summary,
+            output_summary=f"Generated {len(sub_questions)} sub-questions from topic",
+            output=full_output,
             duration_ms=duration_ms,
+            tokens=tokens,
         )
         return sub_questions, trace
