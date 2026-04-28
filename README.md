@@ -2,6 +2,42 @@
 
 A Python backend service that uses a 5-agent pipeline — built on **LangChain primitives** + **Azure OpenAI (GPT-4o)** — to research any topic and produce a structured professional report.
 
+## Live Deployment
+
+A working instance is hosted on **Azure App Service** so reviewers can test the pipeline without running anything locally.
+
+**Base URL:** `https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net`
+
+| Endpoint | URL |
+|---|---|
+| Interactive Swagger UI | [`/docs`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/docs) |
+| Liveness probe | [`/health`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/health) |
+| OpenAPI schema | [`/openapi.json`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/openapi.json) |
+| Run pipeline (single response) | `POST /run` |
+| Run pipeline (SSE stream) | `POST /run/stream` |
+
+### One-liner test (no setup required)
+
+```bash
+# Liveness — should return {"status":"ok"} immediately
+curl https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/health
+
+# Full pipeline against the live deployment (~50–60 s end-to-end against Azure OpenAI)
+curl -X POST https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/run \
+  -H "Content-Type: application/json" \
+  -d '{"topic":"The impact of LLMs on backend engineering workflows"}'
+```
+
+For a live progress feed, use the streaming endpoint — each agent emits a `trace` event the moment it finishes, with researchers arriving in completion order:
+
+```bash
+curl -N -X POST https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/run/stream \
+  -H "Content-Type: application/json" \
+  -d '{"topic":"The impact of LLMs on backend engineering workflows"}'
+```
+
+The deployed instance is the same image this repository's `Dockerfile` produces, with the four `AZURE_OPENAI_*` values configured as App Service **Application Settings** (which the runtime exposes to the container as environment variables — `pydantic-settings` picks them up directly from `os.environ`, no `.env` file in production).
+
 ## Architecture
 
 ```
