@@ -65,25 +65,9 @@ class ManagerAgent:
                 + writer_trace.tokens
             )
 
-            manager_summary = (
-                f"Pipeline complete: {len(sub_questions)} sub-questions researched, "
-                "results aggregated and written into final report"
-            )
-            manager_trace = TraceEntry(
-                agent="Manager",
-                action="orchestrate_pipeline",
-                input_summary=topic[:300],
-                output_summary=manager_summary,
-                output=manager_summary,
-                duration_ms=total_ms,
-                tokens=TokenUsage(),
-            )
-            yield {"type": "trace", "data": manager_trace.model_dump()}
-
             response = RunResponse(
                 report=report,
                 agent_trace=[
-                    manager_trace,
                     planner_trace,
                     *researcher_traces,
                     aggregator_trace,
