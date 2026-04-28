@@ -8,8 +8,11 @@ A working instance is hosted on **Azure App Service** so reviewers can test the 
 
 **Base URL:** `https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net`
 
+> 👉 **Easiest way to try it: open the base URL in a browser.** The root path (`/`) serves a built-in web UI — just type a topic, press Research, and watch the agent trace and final report render in place.
+
 | Endpoint | URL |
 |---|---|
+| **Web UI** | [`/`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/) |
 | Interactive Swagger UI | [`/docs`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/docs) |
 | Liveness probe | [`/health`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/health) |
 | OpenAPI schema | [`/openapi.json`](https://tectika-agent-api-atg2c4acg5dmaydm.eastus-01.azurewebsites.net/openapi.json) |
@@ -210,6 +213,18 @@ Each line on the wire is `data: <json>\n\n`. Event types:
 
 This makes the parallelism observable: you'll see all Researcher `trace` events arrive close together, well before the Aggregator and Writer events.
 
+### Web UI (`GET /`)
+
+Opening the base URL in a browser serves a small built-in frontend that drives the same `POST /run` endpoint:
+
+- A topic input + **Research** button.
+- A loading state with a live elapsed-time counter (the pipeline takes 45–60 s).
+- A **Research Process** panel that renders one card per `agent_trace` entry — colour-coded badge per agent (Planner / Researcher / Aggregator / Writer), the sub-question or input, a snippet of the output, plus per-agent `duration_ms` and total tokens.
+- A **Final Report** panel that renders the Writer's markdown into proper headings, lists, and emphasis.
+- Inline error banner if the call fails (surfaces FastAPI's structured `detail` for validation errors).
+
+The frontend is a single self-contained `static/index.html` (~430 lines, embedded CSS + vanilla ES2020) — no build step, no framework, no bundler. It is mounted from `main.py` via `FileResponse` and is hidden from the OpenAPI schema (`include_in_schema=False`) so `/docs` stays focused on the JSON API.
+
 ## Design Decisions
 
 **LangChain primitives, not the agent framework** — All agents use LangChain's typed message and model classes (`AzureChatOpenAI`, `SystemMessage`, `HumanMessage`, `ToolMessage`, `@tool`, `bind_tools`, `with_structured_output`). The `AgentExecutor` / LangGraph stack is intentionally *not* used — the orchestration loop in `ManagerAgent` and the tool-calling loop in `ResearcherAgent` are written explicitly. This keeps the code transparent: every step the system takes is visible in the source.
@@ -242,8 +257,10 @@ tectika/
 │   ├── config.py        # pydantic-settings BaseSettings
 │   └── logging_config.py # JSON structured logging
 └── api/
-    └── routes.py        # POST /run
-main.py                  # FastAPI entry point
+    └── routes.py        # GET /health, POST /run, POST /run/stream
+main.py                  # FastAPI entry point — also serves GET / (frontend)
+static/
+└── index.html           # Single-file vanilla-JS frontend (embedded CSS, no build step)
 docs/
 └── agent-architecture.md # Original design document
 ```
