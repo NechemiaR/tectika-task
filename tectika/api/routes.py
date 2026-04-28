@@ -11,6 +11,12 @@ router = APIRouter()
 logger = logging.getLogger("tectika.api")
 
 
+@router.get("/health")
+async def health() -> dict[str, str]:
+    """Liveness probe — returns 200 with no external dependencies."""
+    return {"status": "ok"}
+
+
 @router.post("/run", response_model=RunResponse)
 async def run_pipeline(request: RunRequest) -> RunResponse:
     logger.info("request_received", extra={"topic": request.topic})
